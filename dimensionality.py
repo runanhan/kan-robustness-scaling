@@ -19,7 +19,7 @@ def _():
 
     device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
     print(f"Using device: {device}")
-    return KAN, math, mo, nn, pd, plt, r2_score, torch
+    return KAN, math, mo, nn, plt, r2_score, torch
 
 
 @app.cell
@@ -97,11 +97,7 @@ def _(target_function, torch):
 
     X_train, Y_train = get_data(800)
     X_test, Y_test = get_data(200)
-
-    results_1 = {"params": [], "loss": [], "r2": []}
-    results_2 = {"params": [], "loss": [], "r2": []}
-    results_3 = {"params": [], "loss": [], "r2": []}
-    return X_test, X_train, Y_test, Y_train, results_3
+    return X_test, X_train, Y_test, Y_train
 
 
 @app.cell
@@ -113,7 +109,7 @@ def _(KAN, X_test, X_train, Y_test, Y_train, math, nn, r2_score, steps, torch):
 
         adam_steps = 0
         if use_warmup:
-            adam_steps = steps/2
+            adam_steps = steps//2
         elif use_adam:
             adam_steps = steps
 
@@ -150,141 +146,40 @@ def _(KAN, X_test, X_train, Y_test, Y_train, math, nn, r2_score, steps, torch):
 
 
 @app.cell
-def _():
-    # df1 = pd.DataFrame(results_1).assign(Method="Standard")
-    # df2 = pd.DataFrame(results_2).assign(Method="Warmup")
-    # df1.insert(0, "Grid Size", grid_sizes)
-    # df2.insert(0, "Grid Size", grid_sizes)
-    # summary_df = pd.concat([df1, df2])
-    # summary_df.to_csv("kan_results.csv", index=False)
-    return
+def _(grid_sizes, train_kan):
+    results_4 = {"params": [], "loss": [], "r2": []}
 
-
-@app.cell
-def _(KAN, X_test, X_train, Y_test, Y_train, math, nn, r2_score, torch):
-    def extend_grid(old_model, new_grid_size, x_sample):
-        """
-        Warm-start a new KAN with a finer grid from old_model's learned splines.
-        Replicates pykan's model.refine() for efficient-kan.
-
-        For each layer, we:
-          1. Evaluate the old spline's per-(in,out) outputs on x_sample
-          2. Fit new B-spline coefficients to those outputs via curve2coeff
-          3. Copy base weights and scalers directly (they're grid-independent)
-        """
-        layer_sizes = (
-            [old_model.layers[0].in_features] +
-            [l.out_features for l in old_model.layers]
-
-        )
-        spline_order = old_model.layers[0].spline_order
-        new_model = KAN(layer_sizes, grid_size=new_grid_size, spline_order=spline_order)
-
-        with torch.no_grad():
-            x = x_sample.clone()
-            for old_layer, new_layer in zip(old_model.layers, new_model.layers):
-                # B-spline bases at current inputs: (batch, in_features, old_n_coeffs)
-                old_b = old_layer.b_splines(x)
-
-                # Recover per-(batch, in, out) spline contributions
-                # scaled_spline_weight: (out, in, old_n_coeffs)
-                y = torch.einsum('bik,oik->bio', old_b, old_layer.scaled_spline_weight)
-                # y shape: (batch, in_features, out_features) — what curve2coeff expects
-
-                # Fit new coefficients and copy grid-independent weights
-                new_layer.spline_weight.data.copy_(new_layer.curve2coeff(x, y))
-                new_layer.base_weight.data.copy_(old_layer.base_weight.data)
-                if hasattr(new_layer, 'spline_scaler') and hasattr(old_layer, 'spline_scaler'):
-                    new_layer.spline_scaler.data.copy_(old_layer.spline_scaler.data)
-
-                x = old_layer(x)  # advance x to next layer's input domain
-
-        return new_model
-
-
-    def train_with_grid_extension(grid_sizes, steps_per_grid=200):
-        """
-        Single model trained sequentially across grid sizes with warm-starting.
-        This directly replicates the paper's setup.
-        """
-        results = {"params": [], "loss": [], "r2": []}
-        criterion = nn.MSELoss()
-
-        def lbfgs_train(model, steps):
-            opt = torch.optim.LBFGS(
-                model.parameters(), lr=1.0,
-                history_size=10, line_search_fn="strong_wolfe"
-            )
-            for _ in range(steps):
-                def closure():
-                    opt.zero_grad()
-                    loss = criterion(model(X_train), Y_train)
-                    loss.backward()
-                    return loss
-                opt.step(closure)
-
-        model = KAN([100, 1, 1], grid_size=grid_sizes[0])
-
-        for i, grid_size in enumerate(grid_sizes):
-            if i > 0:
-                model = extend_grid(model, grid_size, X_train)  # warm-start
-
-            lbfgs_train(model, steps_per_grid)
-
-            with torch.no_grad():
-                pred = model(X_test)
-                mse = criterion(pred, Y_test).item()
-                rmse = math.sqrt(mse)
-                r2 = r2_score(Y_test.cpu().numpy(), pred.cpu().numpy())
-                n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-            results["params"].append(n_params)
-            results["loss"].append(rmse)
-            results["r2"].append(r2)
-            print(f"Grid {grid_size:>3d} | params={n_params:>6d} | RMSE={rmse:.4e} | R²={r2:.4f}")
-
-        return results
-
-    return
-
-
-@app.cell
-def _(grid_sizes, results_3, train_kan):
     for g in grid_sizes:
         print(f"**Processing Grid Size: {g}...**")
 
-        p3, l3, r3 = train_kan(g, use_warmup=False)
-        results_3["params"].append(p3); results_3["loss"].append(l3); results_3["r2"].append(r3)
-
-    return (g,)
-
-
-@app.cell
-def _(grid_sizes, pd, results_3):
-    df3 = pd.DataFrame(results_3).assign(Method="Grid-extension")
-    df3.insert(0, "Grid Size", grid_sizes)
-    df3.to_csv("new_results.csv", index=False)
-    return
-
-
-@app.cell
-def _(g, grid_sizes, train_kan):
-    results_4 = {"params": [], "loss": [], "r2": []}
-
-    for g1 in grid_sizes:
-        print(f"**Processing Grid Size: {g1}...**")
-
         p4, l4, r4 = train_kan(g, use_warmup=False, use_adam=True)
         results_4["params"].append(p4); results_4["loss"].append(l4); results_4["r2"].append(r4)
-    return (results_4,)
+    return g, results_4
 
 
 @app.cell
 def _(plt):
+    import numpy as np
+
     def plot_kan_results(grid_sizes, results, title="Results"):
-        fig, ax1 = plt.subplots(figsize=(8, 5))
-        ax1.plot(grid_sizes, results["r2"], 'go--', label='R²')
-        ax1.set_title(f"{title} - Accuracy")
+
+        param_counts = 101 * (np.array(grid_sizes)+4)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8), sharex=True)
+
+        ax1.plot(param_counts, results["r2"], 'ro-', label='R²')
+        ax1.set_xscale('log') 
+        ax1.set_title(f"{title} - R²")
+        ax1.set_xlabel('Parameter Count (N)')
+        ax1.set_ylabel('R²')
+
+        ax2.plot(param_counts, results["loss"], 'ro-', label='Test Loss (RMSE)')
+        ax2.set_yscale('log')
+        ax2.set_xscale('log')
+        ax2.set_xlabel('Parameter Count (N)')
+        ax2.set_ylabel('RMSE')
+        ax2.set_title(f"{title} - RMSE")
+
         plt.close()
         return fig
 
@@ -295,6 +190,50 @@ def _(plt):
 def _(grid_sizes, mo, plot_kan_results, results_4):
     adam_fig = plot_kan_results(grid_sizes, results_4, "Adam Experiment")
     mo.as_html(adam_fig)
+    return
+
+
+@app.cell
+def _(results_4):
+    print(results_4['loss'])
+    return
+
+
+@app.cell
+def _(g, grid_sizes, train_kan):
+    results_1 = {"params": [], "loss": [], "r2": []}
+
+    for g1 in grid_sizes:
+        print(f"**Processing Grid Size: {g1}...**")
+
+        p1, l1, r1 = train_kan(g, use_warmup=False, use_adam=False)
+        results_1["params"].append(p1); results_1["loss"].append(l1); results_1["r2"].append(r1)
+    return (results_1,)
+
+
+@app.cell
+def _(grid_sizes, mo, plot_kan_results, results_1):
+    lbfgs_fig = plot_kan_results(grid_sizes, results_1, "LBFGS Experiment")
+    mo.as_html(lbfgs_fig)
+    return
+
+
+@app.cell
+def _(g, grid_sizes, train_kan):
+    results_2 = {"params": [], "loss": [], "r2": []}
+
+    for g2 in grid_sizes:
+        print(f"**Processing Grid Size: {g2}...**")
+
+        p2, l2, r2 = train_kan(g, use_warmup=True, use_adam=False)
+        results_2["params"].append(p2); results_2["loss"].append(l2); results_2["r2"].append(r2)
+    return (results_2,)
+
+
+@app.cell
+def _(grid_sizes, mo, plot_kan_results, results_2):
+    mixed_fig = plot_kan_results(grid_sizes, results_2, "Mixed Experiment")
+    mo.as_html(mixed_fig)
     return
 
 
