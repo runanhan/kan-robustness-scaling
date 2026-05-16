@@ -4,3 +4,4 @@ uv.lock
 figures/
 *_cache_data
 *_state
+/model
