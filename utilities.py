@@ -5,17 +5,20 @@ from sklearn.metrics import r2_score
 import math
 import numpy as np
 import os
+from tqdm.auto import tqdm
 
 
 def sol_fun(x, dim, data):
     if data=='A':
-        return torch.exp(1/dim * torch.sum(torch.sin(torch.pi * x / 2) ** 2, dim=1, keepdim=True))
+        centered_sin = (torch.sin(torch.pi * x / 2) ** 2) - 0.5
+        return torch.exp(1/math.sqrt(dim) * torch.sum(centered_sin, dim=1, keepdim=True))
     elif data=='B':
         inside_mask = (x > -1.0) & (x < 1.0)
         safe_x = torch.where(inside_mask, x, torch.zeros_like(x))
         bump = torch.exp(1.0 / (safe_x ** 2 - 1.0))
         bump_masked = torch.where(inside_mask, bump, torch.zeros_like(bump))
-        return torch.sum(bump_masked, dim=1, keepdim=True)
+        centered_bump = bump_masked - 0.222 
+        return 1/math.sqrt(dim) * torch.sum(centered_bump, dim=1, keepdim=True)
     elif data=='C':
         return 1/math.sqrt(dim) * torch.sum(x, dim=1, keepdim=True)
     else:
@@ -23,11 +26,7 @@ def sol_fun(x, dim, data):
     
 
     
-def generate_dataset(dim, data, n_train=None, n_test=None, seed=1, device=torch.device('cpu'), ranges=[-1, 1]):
-    if n_train is None:
-        n_train = globals().get('n_train', 1000)
-    if n_test is None:
-        n_test = globals().get('n_test', 200)
+def generate_dataset(dim, data, seed, n_train, n_test, device=torch.device('cpu'), ranges=[-1, 1]):
     
     torch.manual_seed(seed)
     
@@ -47,53 +46,34 @@ def generate_dataset(dim, data, n_train=None, n_test=None, seed=1, device=torch.
     return dataset
 
 
-
-def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.device('cpu'), increment=None, target_r2=None):
+def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.device('cpu'), target_r2=None):
     
 
     rmses = []
     r2s = []
-
-    total_samples = dataset['train_input'].shape[0]
-    if increment is not None:
-        end_indices = list(range(increment, total_samples+1, increment))
-    else:
-        end_indices = [total_samples]
-
-    num_chunks = len(end_indices)
-    base_steps = steps // num_chunks
-    remainder = steps % num_chunks
-    chunk_steps_list = [base_steps + (1 if i < remainder else 0) for i in range(num_chunks)]
-    
-    model = None
-    current_grid_size = None
-    stopped_at_n = None
+    train_losses = []
     early_stopping = False
+    stopped_at_n = None
 
-    for chunk_idx, end_idx in enumerate(end_indices):
+    if not static:
+        run_steps = steps//len(grids)
+    else:
+        run_steps = steps
+        grids = [grids[0]]
+
+    for grid in grids:
 
         if early_stopping:
             break
 
-        x_chunk = dataset['train_input'][:end_idx]
-        y_chunk = dataset['train_label'][:end_idx]
-
-        if static:
-            grid=grids[0]
-        else:
-            grid_mapping_factor = max(1, len(end_indices) // len(grids))
-            grid_idx = min(chunk_idx // grid_mapping_factor, len(grids) - 1)
-            grid = grids[grid_idx]
-        print("Training with grid G =", grid, "on samples 0 to", end_idx)
-        if model is None:
+        if grid==grids[0]:
             model = KAN(width=width, grid=grid, k=k, seed=seed, device=device, auto_save=False)
             model = model.speed()
-        elif not static and grid != current_grid_size:
+        else:
             model.save_act = True
-            model.get_act(x_chunk)
+            model.get_act(dataset['train_input'])
             model = model.refine(grid)
             model = model.speed()
-            current_grid_size = grid
         criterion = torch.nn.MSELoss()
 
         optimizer = LBFGS(
@@ -106,18 +86,19 @@ def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.
                 tolerance_ys=1e-32
             )
 
-        run_steps = chunk_steps_list[chunk_idx]
-        for _ in range(run_steps):
+        pbar = tqdm(range(run_steps), leave=False, desc=f"Grid={grid}")
+        for step in pbar:
             def closure():
                 optimizer.zero_grad()
-                loss = criterion(model(x_chunk), y_chunk)
+                loss = criterion(model(dataset['train_input']), dataset['train_label'])
                 loss.backward()
                 return loss
 
-            if _ % 10 == 0 and _ < 50:
-                model.update_grid_from_samples(x_chunk)
+            if step % 10 == 0 and step < 50:
+                model.update_grid_from_samples(dataset['train_input'])
 
-            optimizer.step(closure)
+            loss = optimizer.step(closure)
+            train_losses.append(loss.item())
             with torch.no_grad():
                 test_pred = model(dataset['test_input'])
                 mse = criterion(test_pred, dataset['test_label'])
@@ -128,10 +109,11 @@ def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.
             r2s.append(r2)
 
             if target_r2 is not None and r2 >= target_r2:
-                print(f"Target R2 of {target_r2} reached at step {_}. N={end_idx}")
-                stopped_at_n = end_idx
+                print(f"Target R2 of {target_r2} reached at step {step}. N={dataset['train_input'].shape[0]}")
+                stopped_at_n = step
                 early_stopping = True
                 break
+
     
     with torch.no_grad():
         final_pred = model(dataset['test_input'])
@@ -141,9 +123,111 @@ def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.
         "r2s": r2s,
         "preds": final_pred,
         "test_label": dataset['test_label'],
-        "stopped_at_n": stopped_at_n
+        "stopped_at_n": stopped_at_n,
+        "train_losses": train_losses
     }
     return results
+
+# def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.device('cpu'), increment=None, target_r2=None):
+    
+
+#     rmses = []
+#     r2s = []
+#     train_losses = []
+
+#     total_samples = dataset['train_input'].shape[0]
+#     if increment is not None:
+#         end_indices = list(range(increment, total_samples+1, increment))
+#     else:
+#         end_indices = [total_samples]
+
+#     num_chunks = len(end_indices)
+#     base_steps = steps // num_chunks
+#     remainder = steps % num_chunks
+#     chunk_steps_list = [base_steps + (1 if i < remainder else 0) for i in range(num_chunks)]
+    
+#     model = None
+#     current_grid_size = None
+#     stopped_at_n = None
+#     early_stopping = False
+
+#     for chunk_idx, end_idx in enumerate(end_indices):
+
+#         if early_stopping:
+#             break
+
+#         x_chunk = dataset['train_input'][:end_idx]
+#         y_chunk = dataset['train_label'][:end_idx]
+
+#         if static:
+#             grid=grids[0]
+#         else:
+#             grid_mapping_factor = max(1, len(end_indices) // len(grids))
+#             grid_idx = min(chunk_idx // grid_mapping_factor, len(grids) - 1)
+#             grid = grids[grid_idx]
+#         print("Training with grid G =", grid, "on samples 0 to", end_idx)
+#         if model is None:
+#             model = KAN(width=width, grid=grid, k=k, seed=seed, device=device, auto_save=False)
+#             model = model.speed()
+#         elif not static and grid != current_grid_size:
+#             model.save_act = True
+#             model.get_act(x_chunk)
+#             model = model.refine(grid)
+#             model = model.speed()
+#             current_grid_size = grid
+#         criterion = torch.nn.MSELoss()
+
+#         optimizer = LBFGS(
+#                 model.parameters(), 
+#                 lr=lr, 
+#                 history_size=10, 
+#                 line_search_fn="strong_wolfe",
+#                 tolerance_grad=1e-32, 
+#                 tolerance_change=1e-32, 
+#                 tolerance_ys=1e-32
+#             )
+
+#         run_steps = chunk_steps_list[chunk_idx]
+#         pbar = tqdm(range(run_steps), desc=f"Steps (N={end_idx})", leave=True)
+#         for _ in pbar:
+#             def closure():
+#                 optimizer.zero_grad()
+#                 loss = criterion(model(x_chunk), y_chunk)
+#                 loss.backward()
+#                 return loss
+
+#             if _ % 10 == 0 and _ < 50:
+#                 model.update_grid_from_samples(x_chunk)
+
+#             loss = optimizer.step(closure)
+#             train_losses.append(loss.item())
+#             with torch.no_grad():
+#                 test_pred = model(dataset['test_input'])
+#                 mse = criterion(test_pred, dataset['test_label'])
+#                 rmse = torch.sqrt(mse).item()
+#                 r2 = r2_score(dataset['test_label'].cpu().numpy(), test_pred.cpu().numpy())
+
+#             rmses.append(rmse)
+#             r2s.append(r2)
+
+#             if target_r2 is not None and r2 >= target_r2:
+#                 print(f"Target R2 of {target_r2} reached at step {_}. N={end_idx}")
+#                 stopped_at_n = end_idx
+#                 early_stopping = True
+#                 break
+    
+#     with torch.no_grad():
+#         final_pred = model(dataset['test_input'])
+            
+#     results = {
+#         "rmses": rmses,
+#         "r2s": r2s,
+#         "preds": final_pred,
+#         "test_label": dataset['test_label'],
+#         "stopped_at_n": stopped_at_n,
+#         "train_losses": train_losses
+#     }
+#     return results
 
 def find_N(width, dataset, steps, grids, lr, k, device, static, seed, increment, target_r2):
     coarse_kan = train_kan(width=width, dataset=dataset, steps=steps, grids=grids, lr=lr, k=k, device=device, static=static, seed=seed, increment=increment, target_r2=target_r2)
@@ -184,8 +268,8 @@ def train_mlp(width, dataset, steps, lr, seed=1):
 
 
 
-def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, cutoff = 3):
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, cutoff = 3, ylim=[-5, 1.2]):
+    fig, ((ax1, ax2, ax3)) = plt.subplots(1, 3, figsize=(12, 5))
 
     def mean_err(results_all_seeds, dimensions, seeds, key):
         means = []
@@ -204,24 +288,7 @@ def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, 
             upper_errs.append(max_val - mean_val)
             
         return np.array(means), np.vstack([lower_errs, upper_errs])
-    
-    def mean_err_nrmse(results_all_seeds, dimensions, seeds, key):
-        means = []
-        lower_errs = []
-        upper_errs = []
-        
-        for d in dimensions:
-            nrmses = np.array([results_all_seeds[seed][d][key][-1] / torch.std(results_all_seeds[seed][d]['preds']).item() for seed in seeds])
-            
-            mean_val = np.mean(nrmses)
-            min_val = np.min(nrmses)
-            max_val = np.max(nrmses)
-            
-            means.append(mean_val)
-            lower_errs.append(mean_val - min_val)
-            upper_errs.append(max_val - mean_val)
-            
-        return np.array(means), np.vstack([lower_errs, upper_errs])
+
 
     static_means_r2, static_yerr_r2 = mean_err(static_kan, dimensions, seeds, 'r2s')
     dyn_means_r2, dyn_yerr_r2 = mean_err(dyn_kan, dimensions, seeds, 'r2s')
@@ -230,9 +297,6 @@ def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, 
     dyn_means_rmse, dyn_yerr_rmse = mean_err(dyn_kan, dimensions, seeds, 'rmses')
     mlp_means_rmse, mlp_yerr_rmse = mean_err(mlp, dimensions, seeds, 'test_loss')
     
-    static_means_nrmse, static_yerr_nrmse = mean_err_nrmse(static_kan, dimensions, seeds, 'rmses')
-    dyn_means_nrmse, dyn_yerr_nrmse = mean_err_nrmse(dyn_kan, dimensions, seeds, 'rmses')
-    mlp_means_nrmse, mlp_yerr_nrmse = mean_err_nrmse(mlp, dimensions, seeds, 'test_loss')
 
     ax1.errorbar(dimensions, static_means_r2, yerr=static_yerr_r2, marker='s', linestyle='-', 
                 capsize=4, elinewidth=1.5, alpha=0.8, label='Static KAN G=3')  
@@ -256,13 +320,6 @@ def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, 
     ax3.errorbar(dimensions, mlp_means_rmse, yerr=mlp_yerr_rmse, marker='o', linestyle='-',
                 capsize=4, elinewidth=1.5, alpha=0.8)
     
-    ax4.errorbar(dimensions, static_means_nrmse, yerr=static_yerr_nrmse, marker='s', linestyle='-',
-                capsize=4, elinewidth=1.5, alpha=0.8)
-    ax4.errorbar(dimensions, dyn_means_nrmse, yerr=dyn_yerr_nrmse, marker='^', linestyle='-',
-                capsize=4, elinewidth=1.5, alpha=0.8)
-    ax4.errorbar(dimensions, mlp_means_nrmse, yerr=mlp_yerr_nrmse, marker='o', linestyle='-',
-                capsize=4, elinewidth=1.5, alpha=0.8)
-    
 
 
     ax1.set_xlabel('dimensions (log)')
@@ -270,6 +327,7 @@ def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, 
     ax1.set_ylabel('R2 Score')
     ax1.axvline(x=dimensions[cutoff], color='red', linestyle='--', alpha=0.7)
     ax1.set_xticks(dimensions)
+    ax1.set_ylim(ylim[0], ylim[1])
     ax1.set_xticklabels(dimensions)
 
     ax2.set_xlabel('dimensions (log)')
@@ -278,16 +336,13 @@ def plot_r2s_rmses(static_kan, dyn_kan, mlp, dimensions, seeds, data, plot_mlp, 
     ax2.set_xticks(dimensions[cutoff:])
     ax2.set_xticklabels(dimensions[cutoff:])
     # ax2.get_yaxis().get_major_formatter().set_useOffset(False)
+    
 
     ax3.set_xlabel('dimensions (log)')
     ax3.set_xscale('log')
     ax3.set_yscale('log')
     ax3.set_ylabel('RMSE (log)')
     
-    ax4.set_xlabel('dimensions (log)')
-    ax4.set_xscale('log')
-    ax4.set_yscale('log')
-    ax4.set_ylabel('NRMSE (log)')
 
     handles, labels = ax1.get_legend_handles_labels()
 
