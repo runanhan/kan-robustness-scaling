@@ -95,7 +95,10 @@ def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.
                 return loss
 
             if step % 10 == 0 and step < 50:
-                model.update_grid_from_samples(dataset['train_input'])
+                try:
+                    model.update_grid_from_samples(dataset['train_input'])
+                except Exception:
+                    pass
 
             loss = optimizer.step(closure)
             train_losses.append(loss.item())
@@ -103,7 +106,10 @@ def train_kan(width, dataset, steps, grids, lr, seed, static, k=3, device=torch.
                 test_pred = model(dataset['test_input'])
                 mse = criterion(test_pred, dataset['test_label'])
                 rmse = torch.sqrt(mse).item()
-                r2 = r2_score(dataset['test_label'].cpu().numpy(), test_pred.cpu().numpy())
+                if torch.isnan(test_pred).any():
+                    r2 = float('-inf')
+                else:
+                    r2 = r2_score(dataset['test_label'].cpu().numpy(), test_pred.cpu().numpy())
 
             rmses.append(rmse)
             r2s.append(r2)
