@@ -5,7 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "efficient-kan",
     "matplotlib>=3.10.9",
     "numpy>=2.4.4",
     "pandas>=3.0.3",
@@ -20,5 +19,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-efficient-kan = { git = "https://github.com/Blealtan/efficient-kan" }
 pykan = { git = "https://github.com/KindXiaoming/pykan.git" }

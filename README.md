@@ -78,7 +78,7 @@ Requires Python ≥ 3.13. Dependencies are managed with [uv](https://docs.astral
 uv sync
 ```
 
-This installs all dependencies including [pykan](https://github.com/KindXiaoming/pykan) and [efficient-kan](https://github.com/Blealtan/efficient-kan) from source.
+This installs all dependencies including [pykan](https://github.com/KindXiaoming/pykan) from source.
 
 Alternatively, install with pip:
 
