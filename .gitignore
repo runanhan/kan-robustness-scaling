@@ -3,7 +3,3 @@ __marimo__/
 uv.lock
 *_cache_data
 *_state
-/model
-/figures
-3-results-backup
-4-results-noise-new

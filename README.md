@@ -55,17 +55,10 @@ All models use L-BFGS optimisation with a strong Wolfe line search.
 
 ```
 .
-├── effect-of-dimensionality.ipynb   # Chapter 4
-├── curse-of-dimensionality.ipynb    # Chapter 5
-├── effect-of-noise.ipynb            # Chapter 6
+├── effect-of-dimensionality.ipynb   # Experiments from Chapter 4
+├── curse-of-dimensionality.ipynb    # Experiments from Chapter 5
+├── effect-of-noise.ipynb            # Experiments from Chapter 6
 ├── utilities.py                     # Dataset generation and training helpers
-├── datasets/                        # Pre-generated clean datasets (by seed)
-├── datasets-noise/                  # Noisy datasets generated during Ch.6 runs
-├── 4-results/                       # Saved results for Ch.4
-├── 5-results-A/                     # Saved results for Ch.5 function A
-├── 5-results-C/                     # Saved results for Ch.5 function C
-├── 6-results-noise-gaussian/        # Saved results for Ch.6 Gaussian noise
-├── 6-results-noise-extreme/         # Saved results for Ch.6 outlier noise
 ```
 
 ---
@@ -108,4 +101,3 @@ Training is compute-intensive at higher dimensions. The dimensionality and curse
 | Seeds | 0, 1, 42 |
 | Dimensions (Ch.4) | 5, 10, 20, 50, 100, 200, 500, 1000 |
 | Dimensions (Ch.5) | 5, 10, 15, …, 100 |
-| Target R² (Ch.5) | 0.95 |
